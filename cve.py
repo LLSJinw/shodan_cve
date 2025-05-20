@@ -1,68 +1,49 @@
 import streamlit as st
+import dns.resolver
 import requests
-import socket
 
-def resolve_domain(domain):
-    try:
-        ip = socket.gethostbyname(domain)
-        return ip
-    except Exception:
-        return None
+st.title("🌐 Domain to CVE Table via Shodan API")
 
-def get_cve_details(cve_id):
-    url = f"https://cve.circl.lu/api/cve/{cve_id}"
+# Input domain
+domain = st.text_input("Enter a domain name (e.g., example.com):")
+
+def resolve_a_records(domain):
     try:
-        resp = requests.get(url, timeout=10)
+        answers = dns.resolver.resolve(domain, 'A')
+        return [r.to_text() for r in answers]
+    except:
+        return []
+
+def query_shodan_vulns(ip):
+    url = f"https://internetdb.shodan.io/{ip}"
+    try:
+        resp = requests.get(url, timeout=5)
         if resp.status_code == 200:
             data = resp.json()
-            return data.get("summary", "No description available.")
-        elif resp.status_code == 404:
-            return "CVE not found in CIRCL database."
+            return data.get("vulns", [])
+    except:
+        pass
+    return []
+
+if st.button("Run Lookup"):
+    if domain:
+        ip_list = resolve_a_records(domain)
+
+        if not ip_list:
+            st.warning("No A records found for this domain.")
         else:
-            return f"CIRCL API error: {resp.status_code}"
-    except Exception as e:
-        return f"Error retrieving CVE info: {e}"
+            st.subheader("🔐 CVE Table")
+            table_data = []
 
-st.title("🔍 Shodan CVE Lookup (IP or Domain)")
-
-user_input = st.text_input("Enter IP Address or Domain Name:")
-
-if st.button("Analyze"):
-    if not user_input:
-        st.warning("Please enter a valid IP or domain.")
-    else:
-        ip = user_input
-        try:
-            socket.inet_aton(user_input)
-        except socket.error:
-            resolved_ip = resolve_domain(user_input)
-            if resolved_ip:
-                ip = resolved_ip
-                st.info(f"Resolved domain {user_input} ➜ {ip}")
-            else:
-                st.error("Failed to resolve domain.")
-                st.stop()
-
-        url = f"https://internetdb.shodan.io/{ip}"
-        try:
-            resp = requests.get(url)
-            if resp.status_code == 200:
-                data = resp.json()
-
-                st.subheader("🔧 IP Information")
-                st.write(f"IP: {data.get('ip')}")
-                st.write(f"Ports: {data.get('ports')}")
-                st.write(f"CPEs: {data.get('cpes')}")
-
-                vulns = data.get("vulns", [])
-                if vulns:
-                    st.subheader("🛡️ CVE Vulnerabilities")
-                    for cve in vulns:
-                        desc = get_cve_details(cve)
-                        st.markdown(f"**[{cve}](https://cve.mitre.org/cgi-bin/cvename.cgi?name={cve})**: {desc}")
+            for ip in ip_list:
+                cves = query_shodan_vulns(ip)
+                if cves:
+                    cve_links = [f"[{cve}](https://nvd.nist.gov/vuln/detail/{cve})" for cve in cves]
+                    table_data.append({"IP": ip, "CVEs": ", ".join(cve_links)})
                 else:
-                    st.success("No CVEs found.")
-            else:
-                st.error(f"Shodan API error: {resp.status_code}")
-        except Exception as e:
-            st.error(f"Error querying Shodan: {e}")
+                    table_data.append({"IP": ip, "CVEs": "No known CVEs"})
+
+            # Display the table
+            st.table(table_data)
+    else:
+        st.warning("Please enter a domain.")
