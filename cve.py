@@ -1,25 +1,24 @@
 import streamlit as st
 import requests
+import socket
+import re
 
-st.title("🌐 Domain → IP → CVE Lookup (Google DNS + Shodan API)")
+st.title("🔍 Multi-Input CVE Lookup (IP + Domain)")
 
-def resolve_dns_via_api(domain):
-    record_types = ['A', 'MX', 'CNAME']
-    results = {"A": [], "MX": [], "CNAME": []}
+def is_ip(s):
+    return re.match(r"^\d{1,3}(\.\d{1,3}){3}$", s.strip()) is not None
 
-    for rtype in record_types:
-        try:
-            url = f"https://dns.google/resolve?name={domain}&type={rtype}"
-            resp = requests.get(url, timeout=5)
-            if resp.status_code == 200:
-                data = resp.json()
-                answers = data.get("Answer", [])
-                for ans in answers:
-                    results[rtype].append(ans["data"])
-        except:
-            pass
-
-    return results
+def resolve_domain_to_ips(domain):
+    url = f"https://dns.google/resolve?name={domain}&type=A"
+    try:
+        resp = requests.get(url, timeout=5)
+        if resp.status_code == 200:
+            data = resp.json()
+            answers = data.get("Answer", [])
+            return [a["data"] for a in answers if is_ip(a["data"])]
+    except:
+        pass
+    return []
 
 def query_shodan_vulns(ip):
     url = f"https://internetdb.shodan.io/{ip}"
@@ -32,34 +31,41 @@ def query_shodan_vulns(ip):
         pass
     return []
 
-# --- Streamlit UI ---
-
-domain = st.text_input("Enter a domain (e.g., example.com):")
+# --- UI Input Box ---
+multi_input = st.text_area("Paste IPs or Domains (one per line):", height=200)
 
 if st.button("Run Lookup"):
-    if not domain:
-        st.warning("Please enter a domain.")
+    if not multi_input.strip():
+        st.warning("Please input at least one IP or domain.")
     else:
-        dns_data = resolve_dns_via_api(domain)
+        entries = [line.strip() for line in multi_input.strip().splitlines() if line.strip()]
+        all_ips = set()
 
-        st.subheader("📡 DNS Records")
-        for record_type, values in dns_data.items():
-            st.write(f"**{record_type} Records:** {', '.join(values) if values else 'None'}")
+        st.subheader("🔄 Resolving Domains to IPs (if needed)")
+        for entry in entries:
+            if is_ip(entry):
+                st.markdown(f"✅ **{entry}** (direct IP)")
+                all_ips.add(entry)
+            else:
+                resolved_ips = resolve_domain_to_ips(entry)
+                if resolved_ips:
+                    st.markdown(f"🌐 **{entry}** ➜ {', '.join(resolved_ips)}")
+                    all_ips.update(resolved_ips)
+                else:
+                    st.warning(f"❌ Could not resolve domain: {entry}")
 
-        ip_list = dns_data["A"]
-
-        if not ip_list:
-            st.warning("No A records found to scan with Shodan.")
+        if not all_ips:
+            st.warning("No valid IPs to query.")
         else:
-            st.subheader("🔐 CVEs from Shodan InternetDB")
+            st.subheader("🔐 Shodan CVE Lookup Table")
+            table = []
 
-            result_table = []
-            for ip in ip_list:
+            for ip in sorted(all_ips):
                 cves = query_shodan_vulns(ip)
                 if cves:
                     cve_links = [f"[{cve}](https://nvd.nist.gov/vuln/detail/{cve})" for cve in cves]
-                    result_table.append({"IP": ip, "CVEs": ", ".join(cve_links)})
+                    table.append({"IP": ip, "CVEs": ", ".join(cve_links)})
                 else:
-                    result_table.append({"IP": ip, "CVEs": "No known CVEs"})
+                    table.append({"IP": ip, "CVEs": "No known CVEs"})
 
-            st.table(result_table)
+            st.table(table)
