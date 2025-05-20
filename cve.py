@@ -2,9 +2,6 @@ import streamlit as st
 import requests
 import socket
 
-# Optional: your NVD API key (can be left blank for now)
-NVD_API_KEY = "YOUR_NVD_API_KEY"
-
 def resolve_domain(domain):
     try:
         ip = socket.gethostbyname(domain)
@@ -13,26 +10,18 @@ def resolve_domain(domain):
         return None
 
 def get_cve_details(cve_id):
-    url = f"https://services.nvd.nist.gov/rest/json/cve/1.0/{cve_id}"
-    headers = {"apiKey": NVD_API_KEY} if NVD_API_KEY else {}
+    url = f"https://cve.circl.lu/api/cve/{cve_id}"
     try:
-        resp = requests.get(url, headers=headers)
+        resp = requests.get(url, timeout=10)
         if resp.status_code == 200:
             data = resp.json()
-            items = data.get("result", {}).get("CVE_Items", [])
-            if items:
-                desc_data = items[0]["cve"]["description"].get("description_data", [])
-                if desc_data:
-                    return desc_data[0]["value"]
-                else:
-                    return "Description not available from NVD."
-            else:
-                return "CVE not found in NVD database."
+            return data.get("summary", "No description available.")
+        elif resp.status_code == 404:
+            return "CVE not found in CIRCL database."
         else:
-            return f"NVD API error: {resp.status_code}"
+            return f"CIRCL API error: {resp.status_code}"
     except Exception as e:
         return f"Error retrieving CVE info: {e}"
-
 
 st.title("🔍 Shodan CVE Lookup (IP or Domain)")
 
@@ -42,13 +31,10 @@ if st.button("Analyze"):
     if not user_input:
         st.warning("Please enter a valid IP or domain.")
     else:
-        # Determine if it's an IP or a domain
         ip = user_input
         try:
-            # Try parsing as IP
             socket.inet_aton(user_input)
         except socket.error:
-            # If not IP, try resolving as domain
             resolved_ip = resolve_domain(user_input)
             if resolved_ip:
                 ip = resolved_ip
@@ -57,7 +43,6 @@ if st.button("Analyze"):
                 st.error("Failed to resolve domain.")
                 st.stop()
 
-        # Query Shodan InternetDB
         url = f"https://internetdb.shodan.io/{ip}"
         try:
             resp = requests.get(url)
@@ -74,7 +59,7 @@ if st.button("Analyze"):
                     st.subheader("🛡️ CVE Vulnerabilities")
                     for cve in vulns:
                         desc = get_cve_details(cve)
-                        st.markdown(f"**[{cve}](https://nvd.nist.gov/vuln/detail/{cve})**: {desc}")
+                        st.markdown(f"**[{cve}](https://cve.mitre.org/cgi-bin/cvename.cgi?name={cve})**: {desc}")
                 else:
                     st.success("No CVEs found.")
             else:
