@@ -7,12 +7,23 @@ st.title("🌐 Domain to CVE Table via Shodan API")
 # Input domain
 domain = st.text_input("Enter a domain name (e.g., example.com):")
 
-def resolve_a_records(domain):
-    try:
-        answers = dns.resolver.resolve(domain, 'A')
-        return [r.to_text() for r in answers]
-    except:
-        return []
+def resolve_dns_via_api(domain):
+    record_types = ['A', 'MX', 'CNAME']
+    results = {"A": [], "MX": [], "CNAME": []}
+
+    for rtype in record_types:
+        try:
+            url = f"https://dns.google/resolve?name={domain}&type={rtype}"
+            resp = requests.get(url, timeout=5)
+            if resp.status_code == 200:
+                data = resp.json()
+                answers = data.get("Answer", [])
+                for ans in answers:
+                    results[rtype].append(ans["data"])
+        except:
+            pass
+
+    return results
 
 def query_shodan_vulns(ip):
     url = f"https://internetdb.shodan.io/{ip}"
