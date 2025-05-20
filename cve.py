@@ -38,7 +38,7 @@ def query_shodan_vulns(ip):
 
 if st.button("Run Lookup"):
     if domain:
-        ip_list = resolve_a_records(domain)
+        ip_list = dns_data["A"]
 
         if not ip_list:
             st.warning("No A records found for this domain.")
