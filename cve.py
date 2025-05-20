@@ -1,8 +1,16 @@
 import streamlit as st
 import requests
+import socket
 
-# Optional: insert your NVD API key here (free)
+# Optional: your NVD API key (can be left blank for now)
 NVD_API_KEY = "YOUR_NVD_API_KEY"
+
+def resolve_domain(domain):
+    try:
+        ip = socket.gethostbyname(domain)
+        return ip
+    except Exception:
+        return None
 
 def get_cve_details(cve_id):
     url = f"https://services.nvd.nist.gov/rest/json/cve/1.0/{cve_id}"
@@ -11,41 +19,65 @@ def get_cve_details(cve_id):
         resp = requests.get(url, headers=headers)
         if resp.status_code == 200:
             data = resp.json()
-            desc = data["result"]["CVE_Items"][0]["cve"]["description"]["description_data"][0]["value"]
-            return desc
+            items = data.get("result", {}).get("CVE_Items", [])
+            if items:
+                desc_data = items[0]["cve"]["description"].get("description_data", [])
+                if desc_data:
+                    return desc_data[0]["value"]
+                else:
+                    return "Description not available from NVD."
+            else:
+                return "CVE not found in NVD database."
         else:
-            return "Description not found."
-    except Exception:
-        return "Error retrieving CVE info."
+            return f"NVD API error: {resp.status_code}"
+    except Exception as e:
+        return f"Error retrieving CVE info: {e}"
 
-st.title("🔎 Shodan CVE Analyzer")
 
-ip_or_domain = st.text_input("Enter IP Address or Domain:")
+st.title("🔍 Shodan CVE Lookup (IP or Domain)")
 
-if st.button("Check Vulnerabilities"):
-    if ip_or_domain:
-        url = f"https://internetdb.shodan.io/{ip_or_domain}"
+user_input = st.text_input("Enter IP Address or Domain Name:")
+
+if st.button("Analyze"):
+    if not user_input:
+        st.warning("Please enter a valid IP or domain.")
+    else:
+        # Determine if it's an IP or a domain
+        ip = user_input
+        try:
+            # Try parsing as IP
+            socket.inet_aton(user_input)
+        except socket.error:
+            # If not IP, try resolving as domain
+            resolved_ip = resolve_domain(user_input)
+            if resolved_ip:
+                ip = resolved_ip
+                st.info(f"Resolved domain {user_input} ➜ {ip}")
+            else:
+                st.error("Failed to resolve domain.")
+                st.stop()
+
+        # Query Shodan InternetDB
+        url = f"https://internetdb.shodan.io/{ip}"
         try:
             resp = requests.get(url)
             if resp.status_code == 200:
                 data = resp.json()
 
-                st.subheader("📡 Host Info")
+                st.subheader("🔧 IP Information")
                 st.write(f"IP: {data.get('ip')}")
                 st.write(f"Ports: {data.get('ports')}")
                 st.write(f"CPEs: {data.get('cpes')}")
 
                 vulns = data.get("vulns", [])
                 if vulns:
-                    st.subheader("🛡️ Vulnerabilities (CVEs)")
+                    st.subheader("🛡️ CVE Vulnerabilities")
                     for cve in vulns:
                         desc = get_cve_details(cve)
                         st.markdown(f"**[{cve}](https://nvd.nist.gov/vuln/detail/{cve})**: {desc}")
                 else:
                     st.success("No CVEs found.")
             else:
-                st.error(f"Shodan API returned status code {resp.status_code}")
+                st.error(f"Shodan API error: {resp.status_code}")
         except Exception as e:
-            st.error(f"Error: {e}")
-    else:
-        st.warning("Please enter a valid IP or domain.")
+            st.error(f"Error querying Shodan: {e}")
