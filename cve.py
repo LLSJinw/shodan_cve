@@ -3,7 +3,7 @@ import requests
 import socket
 import re
 
-st.title("🔍 Multi-Input CVE Lookup (IP + Domain)")
+st.title("🔍 Multi-Input CVE Lookup (IP + Domain) with Open TCP Ports")
 
 def is_ip(s):
     return re.match(r"^\d{1,3}(\.\d{1,3}){3}$", s.strip()) is not None
@@ -26,10 +26,12 @@ def query_shodan_vulns(ip):
         resp = requests.get(url, timeout=5)
         if resp.status_code == 200:
             data = resp.json()
-            return data.get("vulns", [])
+            ports = data.get("ports", [])
+            vulns = data.get("vulns", [])
+            return ports, vulns
     except:
         pass
-    return []
+    return [], []
 
 # --- UI Input Box ---
 multi_input = st.text_area("Paste IPs or Domains (one per line):", height=200)
@@ -57,15 +59,18 @@ if st.button("Run Lookup"):
         if not all_ips:
             st.warning("No valid IPs to query.")
         else:
-            st.subheader("🔐 Shodan CVE Lookup Table")
+            st.subheader("🔐 Shodan Lookup Table")
             table = []
 
             for ip in sorted(all_ips):
-                cves = query_shodan_vulns(ip)
-                if cves:
-                    cve_links = [f"[{cve}](https://nvd.nist.gov/vuln/detail/{cve})" for cve in cves]
-                    table.append({"IP": ip, "CVEs": ", ".join(cve_links)})
-                else:
-                    table.append({"IP": ip, "CVEs": "No known CVEs"})
+                ports, vulns = query_shodan_vulns(ip)
+                port_str = ", ".join(str(p) for p in ports) if ports else "None"
+                cve_links = [f"[{cve}](https://nvd.nist.gov/vuln/detail/{cve})" for cve in vulns] if vulns else ["No known CVEs"]
+
+                table.append({
+                    "IP": ip,
+                    "Open TCP Ports": port_str,
+                    "CVEs": ", ".join(cve_links)
+                })
 
             st.table(table)
