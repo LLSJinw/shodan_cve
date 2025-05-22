@@ -10,7 +10,6 @@ DNSDUMPSTER_API_KEY = "f45c10dee6c277ed34f0168bed29a936d92d52c60eb65d011104046f2
 OPENCVE_USER = "thirasit.kanti@gmail.com"
 OPENCVE_PASS = "SxT74uZ3RULRLP@"
 
-
 def is_ip(s):
     return re.match(r"^\d{1,3}(\.\d{1,3}){3}$", s.strip()) is not None
 
@@ -107,27 +106,20 @@ if st.button("Run Lookup"):
             st.warning("No valid IPs to query.")
         else:
             st.subheader("🔐 Shodan CVE & Port Lookup Table")
-            main_table = []
-            detailed_cves = []
-
             for ip, hostname in sorted(all_ips.items()):
                 ports, vulns = query_shodan_vulns(ip)
                 port_str = ", ".join(str(p) for p in ports) if ports else "None"
                 cve_list = vulns if vulns else []
 
-                main_table.append({
-                    "IP": ip,
-                    "Hostname": hostname,
-                    "Open TCP Ports": port_str,
-                    "CVEs": ", ".join(cve_list) if cve_list else "No known CVEs"
-                })
-
-                for cve in cve_list:
-                    details = get_cve_details(cve)
-                    detailed_cves.append(details)
-
-            st.table(main_table)
-
-            if detailed_cves:
-                st.markdown("### 📋 Detailed CVE Information")
-                st.table(detailed_cves)
+                with st.expander(f"🖥️ {ip} ({hostname})"):
+                    st.markdown(f"**🔌 Open TCP Ports:** `{port_str}`")
+                    if cve_list:
+                        st.markdown(f"**🛡️ CVEs:** {', '.join(cve_list)}")
+                        detailed_rows = []
+                        for cve in cve_list:
+                            details = get_cve_details(cve)
+                            detailed_rows.append(details)
+                        st.markdown("**📋 CVE Details**")
+                        st.table(detailed_rows)
+                    else:
+                        st.success("✅ No known CVEs found.")
