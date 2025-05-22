@@ -3,7 +3,10 @@ import requests
 import socket
 import re
 
-st.title("🔍 Multi-Input CVE Lookup (IP + Domain) with Open TCP Ports")
+st.set_page_config(page_title="Multi-Input CVE Lookup", page_icon="🔍")
+st.title("🔍 Multi-Input CVE Lookup (IP + Domain + DNSDumpster)")
+
+DNSDUMPSTER_API_KEY = "f45c10dee6c277ed34f0168bed29a936d92d52c60eb65d011104046f2ae4740b"
 
 def is_ip(s):
     return re.match(r"^\d{1,3}(\.\d{1,3}){3}$", s.strip()) is not None
@@ -19,6 +22,23 @@ def resolve_domain_to_ips(domain):
     except:
         pass
     return []
+
+def fetch_dnsdumpster_ips(domain):
+    url = f"https://api.dnsdumpster.com/domain/{domain}"
+    headers = {"X-API-Key": DNSDUMPSTER_API_KEY}
+    ips = set()
+    try:
+        resp = requests.get(url, headers=headers, timeout=10)
+        if resp.status_code == 200:
+            data = resp.json()
+            for section in ["a", "mx", "ns"]:
+                for record in data.get(section, []):
+                    for ip_entry in record.get("ips", []):
+                        ip = ip_entry.get("ip")
+                        if ip: ips.add(ip)
+    except:
+        pass
+    return list(ips)
 
 def query_shodan_vulns(ip):
     url = f"https://internetdb.shodan.io/{ip}"
@@ -43,23 +63,30 @@ if st.button("Run Lookup"):
         entries = [line.strip() for line in multi_input.strip().splitlines() if line.strip()]
         all_ips = set()
 
-        st.subheader("🔄 Resolving Domains to IPs (if needed)")
+        st.subheader("🔄 Resolving & Enumerating IPs")
         for entry in entries:
             if is_ip(entry):
                 st.markdown(f"✅ **{entry}** (direct IP)")
                 all_ips.add(entry)
             else:
-                resolved_ips = resolve_domain_to_ips(entry)
-                if resolved_ips:
-                    st.markdown(f"🌐 **{entry}** ➜ {', '.join(resolved_ips)}")
-                    all_ips.update(resolved_ips)
+                resolved = resolve_domain_to_ips(entry)
+                if resolved:
+                    st.markdown(f"🌐 **{entry}** ➔ DNS A Record: {', '.join(resolved)}")
+                    all_ips.update(resolved)
                 else:
-                    st.warning(f"❌ Could not resolve domain: {entry}")
+                    st.warning(f"❌ Could not resolve A record for: {entry}")
+
+                dnsdump_ips = fetch_dnsdumpster_ips(entry)
+                if dnsdump_ips:
+                    st.markdown(f"🔍 **{entry}** ➔ DNSDumpster IPs: {', '.join(dnsdump_ips)}")
+                    all_ips.update(dnsdump_ips)
+                else:
+                    st.info(f"ℹ️ No DNSDumpster results for: {entry}")
 
         if not all_ips:
             st.warning("No valid IPs to query.")
         else:
-            st.subheader("🔐 Shodan Lookup Table")
+            st.subheader("🔐 Shodan CVE & Port Lookup Table")
             table = []
 
             for ip in sorted(all_ips):
