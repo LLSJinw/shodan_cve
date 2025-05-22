@@ -64,11 +64,11 @@ def get_cve_details(cve_id):
         if resp.status_code == 200:
             data = resp.json()
             title = data.get("title", "")
-            score = data.get("metrics", {}).get("cvssV2_0", {}).get("data", {}).get("score", "N/A")
-            return {"CVE ID": cve_id, "Title": title, "CVSS 2.0": score}
+            score = data.get("metrics", {}).get("cvssV3_0", {}).get("data", {}).get("score", "N/A")
+            return {"CVE ID": cve_id, "Title": title, "CVSS 3.0": score}
     except:
         pass
-    return {"CVE ID": cve_id, "Title": "Not Found", "CVSS 2.0": "N/A"}
+    return {"CVE ID": cve_id, "Title": "Not Found", "CVSS 3.0": "N/A"}
 
 # --- UI Input Box ---
 multi_input = st.text_area("Paste IPs or Domains (one per line):", height=200)
