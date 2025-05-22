@@ -7,6 +7,7 @@ st.set_page_config(page_title="Multi-Input CVE Lookup", page_icon="🔍")
 st.title("🔍 Multi-Input CVE Lookup (IP + Domain + DNSDumpster)")
 
 DNSDUMPSTER_API_KEY = "f45c10dee6c277ed34f0168bed29a936d92d52c60eb65d011104046f2ae4740b"
+OPENCVE_AUTH = ("thirasit.kanti@gmail.com", "SxT74uZ3RULRLP@")
 
 def is_ip(s):
     return re.match(r"^\d{1,3}(\.\d{1,3}){3}$", s.strip()) is not None
@@ -23,24 +24,23 @@ def resolve_domain_to_ips(domain):
         pass
     return []
 
-def fetch_dnsdumpster_assets(domain):
+def fetch_dnsdumpster_records(domain):
     url = f"https://api.dnsdumpster.com/domain/{domain}"
     headers = {"X-API-Key": DNSDUMPSTER_API_KEY}
-    assets = []
+    records = []
     try:
         resp = requests.get(url, headers=headers, timeout=10)
         if resp.status_code == 200:
             data = resp.json()
             for section in ["a", "mx", "ns"]:
                 for record in data.get(section, []):
-                    host = record.get("host", "")
                     for ip_entry in record.get("ips", []):
                         ip = ip_entry.get("ip")
                         if ip:
-                            assets.append({"ip": ip, "hostname": host})
+                            records.append((record.get("host", ""), ip))
     except:
         pass
-    return assets
+    return records
 
 def query_shodan_vulns(ip):
     url = f"https://internetdb.shodan.io/{ip}"
@@ -55,6 +55,21 @@ def query_shodan_vulns(ip):
         pass
     return [], []
 
+def get_cve_info(cve_id):
+    url = f"https://app.opencve.io/api/cve/{cve_id}"
+    try:
+        resp = requests.get(url, auth=OPENCVE_AUTH, timeout=10)
+        if resp.status_code == 200:
+            data = resp.json()
+            return {
+                "CVE ID": cve_id,
+                "Title": data.get("title", "N/A"),
+                "CVSS 2.0 Score": data.get("metrics", {}).get("cvssV2_0", {}).get("data", {}).get("score", "N/A")
+            }
+    except:
+        pass
+    return {"CVE ID": cve_id, "Title": "N/A", "CVSS 2.0 Score": "N/A"}
+
 # --- UI Input Box ---
 multi_input = st.text_area("Paste IPs or Domains (one per line):", height=200)
 
@@ -63,57 +78,43 @@ if st.button("Run Lookup"):
         st.warning("Please input at least one IP or domain.")
     else:
         entries = [line.strip() for line in multi_input.strip().splitlines() if line.strip()]
-        asset_list = []
-        ip_seen = set()
+        all_records = set()
 
         st.subheader("🔄 Resolving & Enumerating IPs")
         for entry in entries:
             if is_ip(entry):
                 st.markdown(f"✅ **{entry}** (direct IP)")
-                asset_list.append({"ip": entry, "hostname": ""})
-                ip_seen.add(entry)
+                all_records.add(("", entry))
             else:
                 resolved = resolve_domain_to_ips(entry)
-                if resolved:
-                    st.markdown(f"🌐 **{entry}** ➔ DNS A Record: {', '.join(resolved)}")
-                    for ip in resolved:
-                        if ip not in ip_seen:
-                            asset_list.append({"ip": ip, "hostname": entry})
-                            ip_seen.add(ip)
-                else:
-                    st.warning(f"❌ Could not resolve A record for: {entry}")
-
-                dnsdump_assets = fetch_dnsdumpster_assets(entry)
-                if dnsdump_assets:
-                    for asset in dnsdump_assets:
-                        ip = asset["ip"]
-                        hostname = asset["hostname"]
-                        if ip not in ip_seen:
-                            asset_list.append({"ip": ip, "hostname": hostname})
-                            ip_seen.add(ip)
-                    dns_ips = [a["ip"] for a in dnsdump_assets]
-                    st.markdown(f"🔍 **{entry}** ➔ DNSDumpster IPs: {', '.join(dns_ips)}")
+                for ip in resolved:
+                    st.markdown(f"🌐 **{entry}** ➔ DNS A Record: {ip}")
+                    all_records.add((entry, ip))
+                dns_records = fetch_dnsdumpster_records(entry)
+                if dns_records:
+                    for host, ip in dns_records:
+                        st.markdown(f"🔍 DNSDumpster ➔ {host} → {ip}")
+                        all_records.add((host, ip))
                 else:
                     st.info(f"ℹ️ No DNSDumpster results for: {entry}")
 
-        if not asset_list:
+        if not all_records:
             st.warning("No valid IPs to query.")
         else:
             st.subheader("🔐 Shodan CVE & Port Lookup Table")
-            table = []
-
-            for asset in asset_list:
-                ip = asset["ip"]
-                hostname = asset["hostname"]
+            for host, ip in sorted(all_records, key=lambda x: x[1]):
                 ports, vulns = query_shodan_vulns(ip)
-                port_str = ", ".join(str(p) for p in ports) if ports else "None"
-                cve_links = [f"[{cve}](https://nvd.nist.gov/vuln/detail/{cve})" for cve in vulns] if vulns else ["No known CVEs"]
+                st.markdown(f"#### 🔹 IP: {ip}")
+                if host:
+                    st.markdown(f"**Hostname:** {host}")
+                st.markdown(f"**Open TCP Ports:** {', '.join(str(p) for p in ports) if ports else 'None'}")
 
-                table.append({
-                    "IP": ip,
-                    "Hostname": hostname,
-                    "Open TCP Ports": port_str,
-                    "CVEs": ", ".join(cve_links)
-                })
-
-            st.table(table)
+                if vulns:
+                    with st.expander(f"🦠 {len(vulns)} CVEs found – click to expand"):
+                        cve_table = []
+                        for cve_id in vulns:
+                            info = get_cve_info(cve_id)
+                            cve_table.append(info)
+                        st.table(cve_table)
+                else:
+                    st.markdown("✅ No known CVEs found.")
