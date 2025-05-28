@@ -6,9 +6,9 @@ import re
 st.set_page_config(page_title="Multi-Input CVE Lookup", page_icon="🔍")
 st.title("🔍 Multi-Input CVE Lookup (IP + Domain + DNSDumpster)")
 
-DNSDUMPSTER_API_KEY = "f45c10dee6c277ed34f0168bed29a936d92d52c60eb65d011104046f2ae4740b"
-OPENCVE_USER = "thirasit.kanti@gmail.com"
-OPENCVE_PASS = "SxT74uZ3RULRLP@"
+DNSDUMPSTER_API_KEY = st.secrets["dnsdumpster_api_key"]
+OPENCVE_USER = st.secrets["opencve_user"]
+OPENCVE_PASS = st.secrets["opencve_pass"]
 
 def is_ip(s):
     return re.match(r"^\d{1,3}(\.\d{1,3}){3}$", s.strip()) is not None
