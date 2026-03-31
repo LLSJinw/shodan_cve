@@ -3,17 +3,29 @@ import requests
 import re
 from urllib.parse import quote
 
+# -----------------------------
+# Configuration & UI Setup
+# -----------------------------
 st.set_page_config(page_title="Datadog Presales Recon", page_icon="🔍", layout="wide")
-st.title("🔍 Datadog Presales Recon Helper")
-st.caption("Public-signal recon to support presales conversations. Use findings as discussion starters.")
 
-# Secrets - Ensure these are in your .streamlit/secrets.toml
+# Custom CSS for better styling
+st.markdown("""
+    <style>
+    .metric-container { background-color: #f0f2f6; padding: 15px; border-radius: 10px; border: 1px solid #d1d5db; }
+    .stMetric { text-align: center; }
+    </style>
+    """, unsafe_allow_value=True)
+
+st.title("🔍 Datadog Presales Recon Helper")
+st.caption("Automated Public-Signal Recon for Cloud Infrastructure & Security Exposure.")
+
+# Secrets - These should be set in Streamlit Cloud Secrets or .streamlit/secrets.toml
 DNSDUMPSTER_API_KEY = st.secrets.get("dnsdumpster_api_key", "")
 OPENCVE_USER = st.secrets.get("opencve_user", "")
 OPENCVE_PASS = st.secrets.get("opencve_pass", "")
 
 # -----------------------------
-# Helpers
+# Helpers & Recon Engines
 # -----------------------------
 def is_ip(s):
     return re.match(r"^\d{1,3}(\.\d{1,3}){3}$", s.strip()) is not None
@@ -24,202 +36,142 @@ def resolve_domain_to_ips(domain):
         resp = requests.get(url, timeout=8)
         if resp.status_code == 200:
             data = resp.json()
-            answers = data.get("Answer", [])
-            return [a["data"] for a in answers if is_ip(a["data"])]
-    except Exception:
-        pass
+            return [a["data"] for a in data.get("Answer", []) if is_ip(a["data"])]
+    except: pass
     return []
 
-def fetch_dnsdumpster_data(domain):
-    if not DNSDUMPSTER_API_KEY: return {}
-    url = f"https://api.dnsdumpster.com/domain/{domain}"
-    headers = {"X-API-Key": DNSDUMPSTER_API_KEY}
-    assets = {}
-    try:
-        resp = requests.get(url, headers=headers, timeout=15)
-        if resp.status_code == 200:
-            data = resp.json()
-            for section in ["a", "mx", "ns"]:
-                for record in data.get(section, []):
-                    host = record.get("host", "")
-                    for ip_entry in record.get("ips", []):
-                        ip = ip_entry.get("ip")
-                        if ip:
-                            assets[ip] = {
-                                "hostname": host or "Not found",
-                                "asn_name": ip_entry.get("asn_name", ""),
-                                "country": ip_entry.get("country", ""),
-                                "ptr": ip_entry.get("ptr", "")
-                            }
-    except Exception:
-        pass
-    return assets
-
-def query_shodan_vulns(ip):
-    url = f"https://internetdb.shodan.io/{ip}"
-    try:
-        resp = requests.get(url, timeout=8)
-        if resp.status_code == 200:
-            return resp.json()
-    except Exception:
-        pass
-    return {"ports": [], "vulns": [], "hostnames": [], "cpes": [], "tags": []}
-
-def get_cve_details(cve_id):
-    if not OPENCVE_USER: return {"CVE ID": cve_id, "Title": "API Key Missing", "CVSS": "N/A"}
-    url = f"https://app.opencve.io/api/cve/{cve_id}"
-    try:
-        resp = requests.get(url, auth=(OPENCVE_USER, OPENCVE_PASS), timeout=10)
-        if resp.status_code == 200:
-            data = resp.json()
-            metrics = data.get("metrics", {})
-            score = metrics.get("cvssV3_1", {}).get("data", {}).get("score") or \
-                    metrics.get("cvssV3_0", {}).get("data", {}).get("score", "N/A")
-            return {"CVE ID": cve_id, "Title": data.get("title", "No Title"), "CVSS": score}
-    except Exception:
-        pass
-    return {"CVE ID": cve_id, "Title": "Not Found", "CVSS": "N/A"}
-
-def detect_cloud_signal(asset):
+def detect_cloud_signals(asset_data):
+    """
+    Automated logic to flag Cloud Storage and Infrastructure.
+    """
     text = " ".join([
-        asset.get("hostname", ""),
-        asset.get("asn_name", ""),
-        asset.get("ptr", ""),
-        " ".join(asset.get("hostnames", []))
+        asset_data.get("hostname", ""),
+        asset_data.get("asn_name", ""),
+        " ".join(asset_data.get("hostnames", [])),
+        " ".join(asset_data.get("tags", []))
     ]).lower()
 
-    cloud_hits = []
+    found = []
     patterns = {
-        "AWS (EC2/ELB)": ["amazonaws", "aws", "cloudfront", "elb.amazonaws"],
-        "AWS S3 Bucket": ["s3.amazonaws", "s3-website"],
-        "Azure (VM/App)": ["azure", "azurewebsites", "trafficmanager"],
-        "Azure Storage": ["core.windows.net", "blob.core", "azureedge"],
-        "GCP (Compute)": ["googleusercontent", "appspot", "google cloud", "gcp"],
-        "GCP Storage": ["storage.googleapis", "commondatastorage"],
-        "Cloudflare": ["cloudflare"],
-        "DigitalOcean": ["digitaloceanspaces", "digitalocean"]
+        "Cloud Storage": ["s3.amazonaws", "blob.core", "storage.googleapis", "digitaloceanspaces", "s3-website"],
+        "Compute/VM": ["ec2", "amazonaws", "azurewebsites", "googleusercontent", "gcp", "compute.internal"],
+        "CDN/Edge": ["cloudfront", "cloudflare", "akamai", "fastly", "azureedge"]
     }
 
-    for provider, keys in patterns.items():
+    for category, keys in patterns.items():
         if any(k in text for k in keys):
-            cloud_hits.append(provider)
-    return sorted(set(cloud_hits))
+            found.append(category)
+    return list(set(found))
 
-def get_dork_queries(target):
-    # If target is an IP, we dork the IP, otherwise the domain
-    dorks = [
-        {"label": "📦 Cloud Storage", "q": f"site:s3.amazonaws.com \"{target}\" | site:storage.googleapis.com \"{target}\" | site:core.windows.net \"{target}\""},
-        {"label": "🔑 Sensitive Files", "q": f"site:{target} ext:log | ext:txt | ext:conf | ext:env | ext:ini"},
-        {"label": "🛠️ Exposed Panels", "q": f"site:{target} inurl:admin | inurl:login | inurl:dev | inurl:staging"},
-        {"label": "📄 Public Docs", "q": f"site:{target} ext:pdf | ext:doc | ext:docx | ext:xls | ext:xlsx"},
-        {"label": "🚀 Subdomains", "q": f"site:*.{target} -www"}
-    ]
-    return dorks
-
-def infer_observability_use_cases(assets):
-    total_assets = len(assets)
-    total_cves = sum(len(a.get("vulns", [])) for a in assets)
-    unique_ports = sorted(set(p for a in assets for p in a.get("ports", [])))
-    cloud_signals = sorted(set(sig for a in assets for sig in a.get("cloud_signals", [])))
-
-    # Logic for summary scoring
-    score = 0
-    reasons = []
-    if total_assets >= 3: score += 1; reasons.append("Multiple assets detected")
-    if cloud_signals: score += 1; reasons.append(f"Cloud signals: {', '.join(cloud_signals)}")
-    if total_cves >= 1: score += 1; reasons.append("Public CVE exposure detected")
-    
-    fit = "High" if score >= 3 else "Medium" if score >= 2 else "Low"
-    
-    return {
-        "score": score, "fit": fit, "reasons": reasons,
-        "total_assets": total_assets, "total_cves": total_cves,
-        "unique_ports": unique_ports, "cloud_signals": cloud_signals
-    }
+def get_cve_details(cve_id):
+    if not OPENCVE_USER: return {"CVE ID": cve_id, "Title": "Key Missing", "CVSS": "N/A"}
+    url = f"https://app.opencve.io/api/cve/{cve_id}"
+    try:
+        resp = requests.get(url, auth=(OPENCVE_USER, OPENCVE_PASS), timeout=5)
+        if resp.status_code == 200:
+            d = resp.json()
+            score = d.get("metrics", {}).get("cvssV3_1", {}).get("data", {}).get("score", "N/A")
+            return {"CVE ID": cve_id, "Title": d.get("title", "No Title"), "CVSS": score}
+    except: pass
+    return {"CVE ID": cve_id, "Title": "N/A", "CVSS": "N/A"}
 
 # -----------------------------
-# UI
+# Main UI Logic
 # -----------------------------
 multi_input = st.text_area(
-    "Paste IPs or Domains (one per line):",
-    height=150,
-    placeholder="example.com\n1.2.3.4"
+    "Enter Domains or IPs (one per line):", 
+    placeholder="example.com\n1.2.3.4", 
+    height=120
 )
 
-run = st.button("Run Recon")
-
-if run:
+if st.button("🚀 Start Deep Recon"):
     if not multi_input.strip():
-        st.warning("Please input at least one IP or domain.")
+        st.warning("Please enter a target.")
         st.stop()
 
-    entries = [line.strip() for line in multi_input.splitlines() if line.strip()]
+    targets = [t.strip() for t in multi_input.splitlines() if t.strip()]
     all_assets = {}
 
-    st.subheader("🔄 Resolving Assets")
-    for entry in entries:
-        if is_ip(entry):
-            all_assets[entry] = {"hostname": "Direct IP", "asn_name": "", "country": "", "ptr": ""}
-        else:
-            resolved = resolve_domain_to_ips(entry)
-            for ip in resolved:
-                all_assets[ip] = {"hostname": entry, "asn_name": "", "country": "", "ptr": ""}
-            
-            dnsdump_data = fetch_dnsdumpster_data(entry)
-            all_assets.update(dnsdump_data)
+    with st.status("🔍 Scanning Infrastructure...", expanded=True) as status:
+        for t in targets:
+            st.write(f"Analyzing: {t}...")
+            if is_ip(t):
+                all_assets[t] = {"hostname": "Direct IP"}
+            else:
+                ips = resolve_domain_to_ips(t)
+                for ip in ips:
+                    all_assets[ip] = {"hostname": t}
 
-    if not all_assets:
-        st.error("No assets found.")
-        st.stop()
-
-    # Enrichment
-    enriched_assets = []
-    for ip, meta in all_assets.items():
-        shodan_data = query_shodan_vulns(ip)
-        asset = {**meta, "ip": ip, **shodan_data}
-        asset["cloud_signals"] = detect_cloud_signal(asset)
-        enriched_assets.append(asset)
-
-    summary = infer_observability_use_cases(enriched_assets)
+        # Enrich with Shodan (InternetDB is free/no key)
+        enriched_data = []
+        for ip, meta in all_assets.items():
+            try:
+                res = requests.get(f"https://internetdb.shodan.io/{ip}", timeout=5).json()
+                asset = {**meta, **res, "ip": ip}
+                asset["cloud_signals"] = detect_cloud_signals(asset)
+                enriched_data.append(asset)
+            except: pass
+        
+        status.update(label="✅ Recon Complete!", state="complete")
 
     # -----------------------------
-    # NEW: Dorking Section
+    # 1. Automated Count Engine (The Metrics)
     # -----------------------------
-    st.subheader("🎯 Google Dorking (Deep Search)")
-    st.caption("Click a link to launch a Google search for hidden assets.")
+    st.subheader("📊 Automated Infrastructure Insights")
     
-    # Use the first domain/IP for dorking
-    dork_target = entries[0]
-    dorks = get_dork_queries(dork_target)
+    # Calculate counts programmatically
+    storage_count = sum(1 for a in enriched_data if "Cloud Storage" in a["cloud_signals"])
+    compute_count = sum(1 for a in enriched_data if "Compute/VM" in a["cloud_signals"])
+    total_cves = sum(len(a.get("vulns", [])) for a in enriched_data)
     
-    cols = st.columns(len(dorks))
-    for i, dork in enumerate(dorks):
-        google_url = f"https://www.google.com/search?q={quote(dork['q'])}"
-        cols[i].markdown(f"**[{dork['label']}]({google_url})**")
+    m1, m2, m3, m4 = st.columns(4)
+    with m1: st.metric("Cloud Storage Found", storage_count)
+    with m2: st.metric("Compute Nodes", compute_count)
+    with m3: st.metric("CVE Risks", total_cves)
+    with m4: st.metric("Unique Ports", len(set([p for a in enriched_data for p in a.get("ports", [])])))
 
-    st.markdown("---")
+    # -----------------------------
+    # 2. The "Wow Factor" (Dorking Links)
+    # -----------------------------
+    st.subheader("🎯 Live Deep-Dive (Manual Dorks)")
+    st.info("Use these links during conversations to show 'hidden' exposure.")
+    
+    primary = targets[0]
+    dorks = [
+        ("📦 S3/Cloud Buckets", f"site:s3.amazonaws.com \"{primary}\" | site:storage.googleapis.com \"{primary}\""),
+        ("🔑 Sensitive Files", f"site:{primary} ext:log | ext:env | ext:conf | ext:sql"),
+        ("🛠️ Admin Panels", f"site:{primary} inurl:admin | inurl:login | inurl:staging"),
+        ("📄 Public Docs", f"site:{primary} ext:pdf | ext:xlsx | ext:docx")
+    ]
+    
+    d_cols = st.columns(4)
+    for i, (label, q) in enumerate(dorks):
+        url = f"https://www.google.com/search?q={quote(q)}"
+        d_cols[i].markdown(f"**[{label}]({url})**")
 
-    # Executive Summary
-    st.subheader("📌 Presales Summary")
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Assets", summary["total_assets"])
-    c2.metric("Ports", len(summary["unique_ports"]))
-    c3.metric("CVEs", summary["total_cves"])
-    c4.metric("Fit Score", summary["fit"])
+    st.divider()
 
-    # Detail View
-    st.subheader("🔐 Asset Detail")
-    for asset in enriched_assets:
-        with st.expander(f"🖥️ {asset['ip']} ({asset['hostname']})"):
-            colA, colB = st.columns(2)
-            with colA:
-                st.write(f"**ASN:** {asset.get('asn_name', 'N/A')}")
-                st.write(f"**Ports:** `{asset.get('ports', [])}`")
-            with colB:
-                st.write(f"**Cloud:** {', '.join(asset['cloud_signals']) if asset['cloud_signals'] else 'None'}")
-                st.write(f"**Tags:** {asset.get('tags', [])}")
+    # -----------------------------
+    # 3. Asset & CVE Details
+    # -----------------------------
+    st.subheader("🔐 Detailed Asset Analysis")
+    for asset in enriched_data:
+        with st.expander(f"🖥️ {asset['ip']} - {asset['hostname']}"):
+            c_left, c_right = st.columns(2)
+            with c_left:
+                st.write(f"**Open Ports:** `{asset.get('ports', [])}`")
+                st.write(f"**Cloud Tags:** {asset['cloud_signals'] or 'On-Prem/Other'}")
+            with c_right:
+                st.write(f"**Hostnames:** {asset.get('hostnames', [])[:3]}")
+                st.write(f"**CPEs:** {asset.get('cpes', [])[:3]}")
             
             if asset.get("vulns"):
-                st.warning(f"Found CVEs: {', '.join(asset['vulns'])}")
-                rows = [get_cve_details(c) for c in asset["vulns"][:5]] # Limit to 5 for speed
-                st.table(rows)
+                st.error(f"Critical Exposure: {len(asset['vulns'])} CVEs detected.")
+                if st.checkbox(f"Show CVE Details for {asset['ip']}", key=asset['ip']):
+                    rows = [get_cve_details(c) for c in asset["vulns"][:10]]
+                    st.table(rows)
+
+    # -----------------------------
+    # 4. Presales Framing
+    # -----------------------------
+    st.info("**Sales Tip:** If 'Cloud Storage' count is > 0, ask: 'How are you currently tracking the security and cost of your public storage buckets?'")
